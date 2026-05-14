@@ -1,3 +1,8 @@
+// /login route. If the user is already signed in we redirect to "/".
+// Wrong credentials show the server-provided error inline; a 429 (rate
+// limited) message flows through the same path because api.js attaches it
+// to err.message.
+
 import { useState } from "react";
 import { useNavigate, Link as RouterLink, Navigate } from "react-router-dom";
 import {

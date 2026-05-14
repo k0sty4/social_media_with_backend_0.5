@@ -1,3 +1,16 @@
+// Detail page for one user (route: /users/:id).
+//
+// Three modes are mixed in here:
+//   * Read-only profile + paginated post list (works for any user).
+//   * Profile editor — visible only when `authUser.id === user.id`. Sends
+//     PATCH /api/user/<id> and updates the AuthProvider cache so the TopBar
+//     reflects a new name immediately.
+//   * Change-password panel — same own-only gate, calls
+//     POST /api/auth/change-password (which also kills all other sessions).
+//
+// All "edit" actions are double-gated: the UI hides them off-profile, and
+// the server returns 404 if a forged request tries to edit a foreign user.
+
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link as RouterLink } from "react-router-dom";
 import {
@@ -59,6 +72,8 @@ export default function UserDetail() {
   const [pwdOk, setPwdOk] = useState(false);
   const [pwdBusy, setPwdBusy] = useState(false);
 
+  // True only when the page is showing the signed-in user. Drives the
+  // visibility of every "Edit" / "Change password" affordance on this page.
   const isOwnProfile = authUser && user && authUser.id === user.id;
 
   function openPwd() {
@@ -74,6 +89,9 @@ export default function UserDetail() {
     setPwdError(null);
   }
 
+  // Submit a password change. The server returns 401 both when the session
+  // is gone and when the supplied current password doesn't match — same
+  // status code so we don't leak which case we hit.
   async function savePassword() {
     setPwdBusy(true);
     setPwdError(null);
@@ -96,6 +114,8 @@ export default function UserDetail() {
     }
   }
 
+  // Open the editor with the current profile values pre-filled. We keep a
+  // separate draft object so Cancel doesn't mutate the displayed user.
   function startProfileEdit() {
     setProfileDraft({
       name: user.name || "",
@@ -114,13 +134,16 @@ export default function UserDetail() {
     setProfileError(null);
   }
 
+  // Persist the draft. On success we update two pieces of state:
+  //   1. local `user` — the rest of the page re-renders with the new fields
+  //   2. AuthProvider's cached user — so the TopBar (and anywhere else the
+  //      cached `name` is shown) refreshes without a navigation.
   async function saveProfile() {
     setProfileSaving(true);
     setProfileError(null);
     try {
       const updated = await apiUpdateUser(user.id, profileDraft);
       setUser((prev) => ({ ...prev, ...updated }));
-      // keep the AuthProvider's cached user in sync so the TopBar reflects the new name
       cacheAuthUser({ id: updated.id, name: updated.name, email: updated.email });
       setEditingProfile(false);
     } catch (err) {

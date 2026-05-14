@@ -1,3 +1,7 @@
+// Card that renders one post in the feed.
+// If the signed-in user is the author, an inline editor is offered (title +
+// body). The server enforces ownership too — this is just the UI gate.
+
 import { useState } from "react";
 import {
   Card,
@@ -16,6 +20,8 @@ import EditIcon from "@mui/icons-material/Edit";
 import { useAuth } from "../auth.jsx";
 import { updatePost } from "../api";
 
+// First letter of each of the first two words, used as a fallback when the
+// author has no DiceBear avatar yet.
 function initials(name) {
   if (!name) return "?";
   return name
@@ -26,6 +32,8 @@ function initials(name) {
     .join("");
 }
 
+// Deterministic HSL color from a string — gives every author a stable
+// avatar background regardless of refresh order.
 function colorFromString(str) {
   let hash = 0;
   for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
@@ -33,6 +41,10 @@ function colorFromString(str) {
   return `hsl(${hue}, 60%, 55%)`;
 }
 
+// Props:
+//   post           — { id, title, body, user_id, user_name, email, avatar }
+//   onPostUpdated  — called with the updated post object after a successful
+//                    edit, so the parent list can swap in the new content.
 export default function SinglePost({ post, onPostUpdated }) {
   const { user } = useAuth();
   const [expanded, setExpanded] = useState(false);
@@ -43,6 +55,8 @@ export default function SinglePost({ post, onPostUpdated }) {
   const [saving, setSaving] = useState(false);
 
   const authorName = post.user_name || "Unknown";
+  // UI gate for showing the Edit button. The server also enforces this:
+  // if a malicious caller bypasses the UI, PATCH /api/posts/:id returns 404.
   const canEdit = user && user.id === post.user_id;
 
   function startEdit() {
@@ -57,6 +71,9 @@ export default function SinglePost({ post, onPostUpdated }) {
     setError(null);
   }
 
+  // Send the edit to the server. 401 = session died (the global interceptor
+  // already cleared the cached user; we just show a message). 404 = the
+  // backend says the post is missing OR not ours (same code on purpose).
   async function saveEdit() {
     setSaving(true);
     setError(null);

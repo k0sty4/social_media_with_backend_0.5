@@ -23,9 +23,13 @@ from content import random_title, random_body
 
 
 def _hash_token(raw: str) -> str:
-    # sha256 is enough — the token already has 256 bits of entropy, so we don't
-    # need slow hashing here. Storing the hash means a DB leak doesn't hand the
-    # attacker active sessions.
+    """Return the sha256 hex digest of a session token.
+
+    The cookie carries the raw 256-bit token; only this hash is persisted in
+    the ``sessions`` table. A database leak therefore does not expose any
+    live sessions — sha256 isn't reversible. We don't need a slow hash (like
+    scrypt) here because the input already has 256 bits of entropy.
+    """
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -46,17 +50,24 @@ _login_lock = Lock()
 
 
 def _client_ip() -> str:
+    """Best-effort caller IP from the request. Behind a proxy this would also
+    need to honor X-Forwarded-For, which is intentionally NOT trusted here."""
     return request.remote_addr or "unknown"
 
 
 def _prune(q: deque, window: int) -> None:
+    """Drop timestamps older than ``window`` seconds from ``q`` (in place)."""
     cutoff = time.time() - window
     while q and q[0] < cutoff:
         q.popleft()
 
 
 def _login_rate_check(email: str):
-    """Return an error message if the caller is over the limit, else None."""
+    """Return an error message if the caller is over the login rate limit.
+
+    Returns ``None`` when the attempt may proceed. The check is performed
+    under a single mutex so the per-IP and per-email windows stay consistent.
+    """
     with _login_lock:
         ip_q = _login_failures.get(("ip", _client_ip()))
         em_q = _login_failures.get(("email", email))
@@ -72,6 +83,7 @@ def _login_rate_check(email: str):
 
 
 def _login_record_failure(email: str) -> None:
+    """Append the current timestamp to both the per-IP and per-email queues."""
     with _login_lock:
         now = time.time()
         _login_failures.setdefault(("ip", _client_ip()), deque()).append(now)
@@ -79,8 +91,12 @@ def _login_record_failure(email: str) -> None:
 
 
 def _login_reset(email: str) -> None:
-    # Only reset the per-email counter on success. Leaving the per-IP counter
-    # alone stops "guess until success once, then resume" attacks.
+    """Clear the per-email failure history after a successful login.
+
+    The per-IP counter is intentionally NOT reset — otherwise an attacker
+    could "punch through" the IP limit by occasionally landing one valid
+    credential and resuming guesses.
+    """
     with _login_lock:
         _login_failures.pop(("email", email), None)
 
@@ -106,6 +122,12 @@ COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0") == "1"
 
 
 def _set_session_cookie(response, token: str):
+    """Attach the session cookie to ``response`` with safe defaults.
+
+    The cookie is HttpOnly (no JS access), SameSite=Lax (mitigates CSRF on
+    top-level cross-site requests), and gets the Secure flag only when
+    ``COOKIE_SECURE=1`` is set in the environment (i.e. behind HTTPS).
+    """
     response.set_cookie(
         SESSION_COOKIE,
         token,
@@ -118,10 +140,17 @@ def _set_session_cookie(response, token: str):
 
 
 def _clear_session_cookie(response):
+    """Tell the browser to drop the session cookie (used on logout)."""
     response.delete_cookie(SESSION_COOKIE, path="/")
 
 
 def current_user():
+    """Return the ``User`` whose session cookie was sent, or ``None``.
+
+    The cookie value is hashed with sha256 before lookup, so the row stored
+    in ``sessions`` never matches the raw cookie. Expired rows are deleted
+    on first touch (lazy GC), keeping the table from growing forever.
+    """
     raw = request.cookies.get(SESSION_COOKIE)
     if not raw:
         return None
@@ -129,7 +158,6 @@ def current_user():
     if session is None:
         return None
     if session.is_expired():
-        # Lazy GC: nuke the expired row on the spot so the table doesn't grow forever.
         db.session.delete(session)
         db.session.commit()
         return None
@@ -144,9 +172,12 @@ CSRF_EXEMPT_PATHS = frozenset({"/api/auth/login", "/api/auth/register"})
 
 @app.before_request
 def csrf_guard():
-    # Reject mutating requests whose Origin doesn't match the configured
-    # frontend. Browsers always set Origin on POST/PATCH/PUT/DELETE, so this
-    # blocks classic CSRF (a malicious site can't forge the Origin header).
+    """CSRF protection for every mutating request.
+
+    Browsers always attach the ``Origin`` header on POST/PATCH/PUT/DELETE
+    requests, and a script on a third-party site cannot forge it. We compare
+    the incoming Origin to ``FRONTEND_ORIGIN``; mismatch -> 403.
+    """
     if request.method not in ("POST", "PATCH", "PUT", "DELETE"):
         return None
     if request.path in CSRF_EXEMPT_PATHS:
@@ -182,6 +213,7 @@ PAGE_SIZE = 10
 # ---------------------------------------------------------------------------
 
 def fetch_api_users():
+    """Fetch the JSONPlaceholder users list. Returns ``[]`` on any error."""
     try:
         response = requests.get(USERS_API, timeout=5)
         response.raise_for_status()
@@ -192,7 +224,11 @@ def fetch_api_users():
 
 
 def seed_db_with_new_users(count=10):
-    """Append ``count`` new members (plus 3-6 posts each) to the local DB."""
+    """Append ``count`` new members (each with 3–6 posts) to the local DB.
+
+    Emails already present in ``users`` are skipped, so re-running this is
+    safe and incremental. Called once at startup.
+    """
     api_users = fetch_api_users()
     if not api_users:
         print("No users fetched from API, skipping seed.")
@@ -235,6 +271,7 @@ def seed_db_with_new_users(count=10):
 
 @app.route("/", methods=["GET"])
 def api_root():
+    """Landing endpoint: returns the catalog of available routes."""
     return jsonify({
         "name": "Profile Explorer API",
         "endpoints": {
@@ -301,7 +338,11 @@ def api_posts():
 
 @app.route("/api/users/<int:user_id>/posts", methods=["GET"])
 def api_user_posts(user_id):
-    """Paginated posts by a single user — consumed by the user-detail page."""
+    """Paginated posts authored by a single user.
+
+    Returns 404 if the user doesn't exist (no auth involved here — this is
+    a public read endpoint).
+    """
     user = db.session.get(User, user_id)
     if user is None:
         return jsonify({"error": "User not found"}), 404
@@ -348,6 +389,7 @@ def api_users():
 
 @app.route("/api/random-user", methods=["GET"])
 def random_user_endpoint():
+    """Return a single random user. 404 if the DB is empty."""
     user = db.session.scalar(db.select(User).order_by(func.random()).limit(1))
     if user is None:
         return jsonify({"error": "No users in the database yet"}), 404
@@ -356,6 +398,7 @@ def random_user_endpoint():
 
 @app.route("/api/user/<int:user_id>", methods=["GET"])
 def get_user(user_id):
+    """Return one user by id with profile fields and a small post preview."""
     user = db.session.get(User, user_id)
     if user is None:
         return jsonify({"error": "User not found"}), 404
@@ -364,6 +407,7 @@ def get_user(user_id):
 
 @app.route("/api/search", methods=["GET"])
 def search_users():
+    """Case-insensitive substring search across user name and email."""
     query = request.args.get("q", "").strip()
     if not query:
         return jsonify([])
@@ -389,6 +433,13 @@ def search_users():
 
 @app.route("/api/auth/register", methods=["POST"])
 def register():
+    """Create a new user and immediately sign them in.
+
+    Body: ``{name, email, password}``. Responses:
+      * 201 — created; session cookie set
+      * 400 — missing field or password shorter than 8 chars
+      * 409 — email already registered
+    """
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
     email = (data.get("email") or "").strip().lower()
@@ -426,6 +477,15 @@ def register():
 
 @app.route("/api/auth/login", methods=["POST"])
 def login():
+    """Verify credentials and start a session.
+
+    Body: ``{email, password}``. Responses:
+      * 200 — signed in; session cookie set
+      * 400 — missing field
+      * 401 — wrong email or password (deliberately the same message for
+        both — never leak whether the email exists)
+      * 429 — over the rate limit (per-IP or per-email)
+    """
     data = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""
@@ -462,6 +522,13 @@ def login():
 
 @app.route("/api/auth/change-password", methods=["POST"])
 def change_password():
+    """Change the signed-in user's password.
+
+    Body: ``{current_password, new_password}``. Responses:
+      * 200 — password changed; all OTHER sessions for this user are killed
+      * 400 — missing field, new pwd < 8 chars, or new == current
+      * 401 — not signed in OR current password is wrong
+    """
     user = current_user()
     if user is None:
         return jsonify({"error": "authentication required"}), 401
@@ -498,6 +565,11 @@ def change_password():
 
 @app.route("/api/auth/logout", methods=["POST"])
 def logout():
+    """End the current session.
+
+    Deletes the matching ``sessions`` row (if any) and clears the cookie.
+    Always returns 200 — the operation is idempotent.
+    """
     raw = request.cookies.get(SESSION_COOKIE)
     if raw:
         session = db.session.get(Session, _hash_token(raw))
@@ -518,6 +590,16 @@ PROFILE_EDITABLE = ("name", "bio", "phone", "website", "company", "avatar_seed")
 
 @app.route("/api/user/<int:user_id>", methods=["PATCH"])
 def update_user(user_id):
+    """Update one's own profile fields.
+
+    Editable: name, bio, phone, website, company, avatar_seed. ``email`` is
+    intentionally not editable here (it is the login key) and ``password``
+    has its own endpoint. Responses:
+      * 200 — updated; the new public profile is returned
+      * 400 — empty name or no editable field in body
+      * 401 — not signed in
+      * 404 — ``user_id`` is not the caller's id (info-hiding authz)
+    """
     user = current_user()
     if user is None:
         return jsonify({"error": "authentication required"}), 401
@@ -554,13 +636,20 @@ def update_user(user_id):
 
 @app.route("/api/posts/<int:post_id>", methods=["PATCH"])
 def update_post(post_id):
+    """Update one of the caller's own posts.
+
+    Editable: title, body (either or both). Responses:
+      * 200 — updated; the new post payload is returned
+      * 400 — empty title/body or nothing to update
+      * 401 — not signed in
+      * 404 — post does not exist OR is owned by someone else (same code
+        either way, so we never confirm the existence of a foreign post)
+    """
     user = current_user()
     if user is None:
         return jsonify({"error": "authentication required"}), 401
 
     post = db.session.get(Post, post_id)
-    # 404 covers both "missing" and "not yours" — we don't leak existence
-    # of someone else's post to a logged-in stranger.
     if post is None or post.user_id != user.id:
         return jsonify({"error": "post not found"}), 404
 
@@ -595,8 +684,16 @@ def update_post(post_id):
 # ---------------------------------------------------------------------------
 
 def ensure_auth_columns():
-    # create_all() doesn't alter existing tables, so a pre-existing data.db
-    # won't have password_hash / avatar_seed. Add them in place.
+    """Idempotent in-place migrations for the local SQLite file.
+
+    ``db.create_all()`` only creates missing tables, never alters existing
+    ones. So when we add new columns (password_hash, avatar_seed) to
+    ``users``, an old data.db needs explicit ``ALTER TABLE`` here.
+
+    We also handle the one-time switch from plaintext session tokens to
+    sha256-of-token. If any row in ``sessions`` has a token that isn't a
+    64-char hex string, every row is wiped (users simply log in again).
+    """
     from sqlalchemy import inspect, text
 
     inspector = inspect(db.engine)
@@ -608,9 +705,6 @@ def ensure_auth_columns():
             if "avatar_seed" not in columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN avatar_seed VARCHAR"))
 
-    # Switch from plaintext session tokens to sha256-of-token. Any row whose
-    # token isn't 64-char hex is from before the switch — wipe those so old
-    # sessions don't bypass the new lookup. Users just have to log in again.
     if "sessions" in inspector.get_table_names():
         with db.engine.begin() as conn:
             rows = conn.execute(text("SELECT token FROM sessions")).fetchall()

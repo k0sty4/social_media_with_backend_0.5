@@ -1,3 +1,7 @@
+// Application top bar. Renders the nav, and swaps the right-hand cluster
+// between Login/Register links (signed out) and the user's name + Logout
+// button (signed in).
+
 import { AppBar, Toolbar, Typography, Button, Box } from "@mui/material";
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth.jsx";

@@ -1,3 +1,7 @@
+// /register route. POST /api/auth/register both creates the account and
+// signs the user in (the server sets the session cookie on 201), so on
+// success we just redirect to "/".
+
 import { useState } from "react";
 import { useNavigate, Link as RouterLink, Navigate } from "react-router-dom";
 import {
