@@ -6,6 +6,7 @@ import Users from "./pages/Users";
 import UserDetail from "./pages/UserDetail";
 import About from "./pages/About";
 import Login from "./pages/Login";
+import Register from "./pages/Register";
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
         <Route path="/users/:id" element={<UserDetail />} />
         <Route path="/about" element={<About />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
       </Routes>
     </>
   );

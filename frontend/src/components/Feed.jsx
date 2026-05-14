@@ -59,7 +59,12 @@ export default function Feed() {
       <Grid container spacing={2}>
         {posts.map((post) => (
           <Grid size={{ xs: 12, md: 6 }} key={post.id}>
-            <SinglePost post={post} />
+            <SinglePost
+              post={post}
+              onPostUpdated={(updated) =>
+                setPosts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)))
+              }
+            />
           </Grid>
         ))}
       </Grid>

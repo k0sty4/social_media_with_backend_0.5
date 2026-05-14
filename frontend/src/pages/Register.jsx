@@ -13,9 +13,10 @@ import {
 } from "@mui/material";
 import { useAuth } from "../auth.jsx";
 
-export default function Login() {
-  const { user, login } = useAuth();
+export default function Register() {
+  const { user, register } = useAuth();
   const navigate = useNavigate();
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
@@ -28,10 +29,10 @@ export default function Login() {
     setError(null);
     setBusy(true);
     try {
-      await login({ email, password });
+      await register({ name, email, password });
       navigate("/");
     } catch (err) {
-      setError(err.message || "Login failed");
+      setError(err.message || "Registration failed");
     } finally {
       setBusy(false);
     }
@@ -40,12 +41,20 @@ export default function Login() {
   return (
     <Container maxWidth="sm" sx={{ py: 3 }}>
       <Typography variant="h4" fontWeight={700} sx={{ mb: 3 }}>
-        Login
+        Register
       </Typography>
 
       <Card>
         <CardContent>
           <Box component="form" onSubmit={handleSubmit} sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <TextField
+              label="Name"
+              autoComplete="name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              fullWidth
+            />
             <TextField
               label="Email"
               type="email"
@@ -58,20 +67,21 @@ export default function Login() {
             <TextField
               label="Password"
               type="password"
-              autoComplete="current-password"
+              autoComplete="new-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
               fullWidth
+              helperText="At least 8 characters"
             />
             <Button type="submit" variant="contained" size="large" disabled={busy}>
-              {busy ? "Signing in..." : "Sign in"}
+              {busy ? "Creating account..." : "Sign up"}
             </Button>
             {error && <Alert severity="error">{error}</Alert>}
             <Typography variant="body2">
-              No account?{" "}
-              <Link component={RouterLink} to="/register">
-                Register
+              Already have an account?{" "}
+              <Link component={RouterLink} to="/login">
+                Sign in
               </Link>
             </Typography>
           </Box>
