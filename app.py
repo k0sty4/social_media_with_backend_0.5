@@ -235,17 +235,28 @@ def seed_db_with_new_users(count=10):
 
 @app.route("/", methods=["GET"])
 def api_root():
-    """Landing endpoint listing available resources."""
     return jsonify({
         "name": "Profile Explorer API",
-        "endpoints": [
-            "GET /api/posts?page=N&per_page=10",
-            "GET /api/users",
-            "GET /api/user/<id>",
-            "GET /api/users/<id>/posts?page=N&per_page=10",
-            "GET /api/random-user",
-            "GET /api/search?q=<query>",
-        ],
+        "endpoints": {
+            "public": [
+                "GET  /api/posts?page=N&per_page=10",
+                "GET  /api/users",
+                "GET  /api/user/<id>",
+                "GET  /api/users/<id>/posts?page=N&per_page=10",
+                "GET  /api/random-user",
+                "GET  /api/search?q=<query>",
+            ],
+            "auth": [
+                "POST /api/auth/register",
+                "POST /api/auth/login",
+                "POST /api/auth/logout",
+                "POST /api/auth/change-password",
+            ],
+            "authed": [
+                "PATCH /api/user/<id>   (only your own)",
+                "PATCH /api/posts/<id>  (only your own)",
+            ],
+        },
     })
 
 
