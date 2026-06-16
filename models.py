@@ -1,8 +1,9 @@
 """SQLAlchemy models for the Profile Explorer app.
 
-Three tables:
+Four tables:
   * ``users``    — accounts (seed users have no password_hash and cannot log in)
-  * ``posts``    — short text posts authored by a user
+  * ``posts``    — short posts (rich-text body + optional image) authored by a user
+  * ``follows``  — directed follower → followee edges between users
   * ``sessions`` — server-side sessions; the cookie carries the raw token,
                    only its sha256 is stored here.
 """
@@ -10,6 +11,7 @@ Three tables:
 from datetime import datetime
 
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import func, select
 from werkzeug.security import generate_password_hash, check_password_hash
 
 # Shared instance — ``app.py`` calls ``db.init_app(app)`` to bind it.
@@ -67,8 +69,24 @@ class User(db.Model):
         seed = self.avatar_seed or f"user{self.id}"
         return f"https://api.dicebear.com/7.x/avataaars/svg?seed={seed}"
 
-    def to_public_dict(self, include_posts=False):
-        """Serialise the user for the API. Never includes ``password_hash``."""
+    def follower_count(self) -> int:
+        """How many users follow this user."""
+        return db.session.scalar(
+            select(func.count()).select_from(Follow).where(Follow.followee_id == self.id)
+        ) or 0
+
+    def following_count(self) -> int:
+        """How many users this user follows."""
+        return db.session.scalar(
+            select(func.count()).select_from(Follow).where(Follow.follower_id == self.id)
+        ) or 0
+
+    def to_public_dict(self, include_posts=False, viewer_id=None):
+        """Serialise the user for the API. Never includes ``password_hash``.
+
+        ``viewer_id`` (the signed-in caller, if any) is used to compute
+        ``isFollowing`` — whether that viewer already follows this user.
+        """
         data = {
             "id": self.id,
             "name": self.name,
@@ -80,6 +98,9 @@ class User(db.Model):
             "bio": self.bio or "",
             "avatar": self.avatar_url(),
             "avatar_seed": self.avatar_seed or "",
+            "followersCount": self.follower_count(),
+            "followingCount": self.following_count(),
+            "isFollowing": Follow.exists(viewer_id, self.id) if viewer_id else False,
         }
         if include_posts:
             data["posts"] = [p.to_api_dict() for p in self.posts[:5]]
@@ -92,7 +113,12 @@ class User(db.Model):
 
 
 class Post(db.Model):
-    """A single short post. ``item`` is the title; ``body`` is the content."""
+    """A single short post.
+
+    ``item`` is the title; ``body`` is sanitised rich-text HTML (bold, italic,
+    links). ``image`` is an optional path to an uploaded picture. ``created_at``
+    backs the "time ago" display in the feed.
+    """
 
     __tablename__ = "posts"
 
@@ -102,6 +128,15 @@ class Post(db.Model):
     )
     item = db.Column(db.String, nullable=False)
     body = db.Column(db.Text, nullable=False)
+    # Relative path under the uploads dir (e.g. "ab12cd.png"); NULL for text-only posts.
+    image = db.Column(db.String)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    def created_iso(self):
+        """UTC creation time as an ISO-8601 string with a ``Z`` suffix, so the
+        browser parses it as UTC. NULL (legacy rows) falls back to epoch."""
+        ts = self.created_at or datetime.utcfromtimestamp(0)
+        return ts.replace(microsecond=0).isoformat() + "Z"
 
     def to_dict(self):
         """Shape used in admin/debug responses (includes author display name)."""
@@ -110,6 +145,8 @@ class Post(db.Model):
             "user_id": self.user_id,
             "item": self.item,
             "body": self.body,
+            "image": self.image,
+            "created_at": self.created_iso(),
             "user_name": self.author.name if self.author else None,
         }
 
@@ -120,7 +157,34 @@ class Post(db.Model):
             "id": self.id,
             "title": self.item,
             "body": self.body,
+            "image": self.image,
+            "created_at": self.created_iso(),
         }
+
+
+class Follow(db.Model):
+    """A directed follow edge: ``follower_id`` follows ``followee_id``.
+
+    The pair is the composite primary key, so a user can follow another at
+    most once and (follower, followee) lookups hit the PK index directly.
+    """
+
+    __tablename__ = "follows"
+
+    follower_id = db.Column(
+        db.Integer, db.ForeignKey("users.id"), primary_key=True, index=True
+    )
+    followee_id = db.Column(
+        db.Integer, db.ForeignKey("users.id"), primary_key=True, index=True
+    )
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    @staticmethod
+    def exists(follower_id, followee_id) -> bool:
+        """True iff ``follower_id`` currently follows ``followee_id``."""
+        if not follower_id or not followee_id:
+            return False
+        return db.session.get(Follow, (follower_id, followee_id)) is not None
 
 
 class Session(db.Model):

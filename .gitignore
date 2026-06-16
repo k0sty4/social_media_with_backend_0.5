@@ -6,3 +6,10 @@ venv/
 .DS_Store
 *.zip
 .env
+uploads/
+.playwright-mcp/
+node_modules/
+dist/
+*.png
+!frontend/src/assets/*.png
+!frontend/public/*.png

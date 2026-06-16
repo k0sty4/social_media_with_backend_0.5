@@ -4,6 +4,21 @@ React (Vite + Material UI) frontend with a Flask + SQLite backend. Cookie-based
 auth (no JWT, no tokens in the response body), users can edit only their own
 posts and profile.
 
+## Features
+
+- **Authentication** — sign-up, login, logout; passwords hashed with scrypt.
+- **User profiles** — dedicated page per user with name, bio, avatar, follower
+  / following counts, and the user's posts.
+- **Search** — find users by username, name, or email.
+- **Follow / unfollow** — directed follow graph; counts shown on each profile.
+- **Feed** — two scopes: **Global** (all users) and **Following** (only people
+  you follow), with **infinite scroll** (IntersectionObserver, no buttons).
+- **Post creation** — title + a **WYSIWYG rich-text editor** (bold, italic,
+  underline, links, lists) + optional **image upload**.
+- **Timestamps** — every post shows relative "time ago" (e.g. "2 hours ago").
+
+The database schema (ER diagram) is in **[SCHEMA.md](SCHEMA.md)**.
+
 ## Architecture
 
 ```
@@ -34,16 +49,24 @@ frontend (React + MUI, Vite)  ──HTTP+cookie──▶  backend (Flask)  ─�
 - **Rate limiting on `/login`**: 10 fails/min per IP, 5 fails/15min per email.
   Trips before the scrypt verify so a flood can't pin a CPU.
 - **CORS**: locked to `FRONTEND_ORIGIN` with `credentials: true`.
+- **Rich-text XSS**: post bodies are HTML from a WYSIWYG editor, sanitised
+  server-side (`sanitize.py`) against a strict tag whitelist — `<script>` and
+  all attributes except a validated `href` are stripped before storage.
+- **Uploads**: only image extensions (png/jpg/gif/webp) accepted, stored under
+  a random uuid filename, capped at 5 MB (`MAX_CONTENT_LENGTH`).
 
 ## Project structure
 
 ```
 profile_parser/
-├── app.py                # Flask JSON API (auth, posts, users, profile)
-├── models.py             # SQLAlchemy models: User, Post, Session
+├── app.py                # Flask JSON API (auth, posts, users, follows, profile)
+├── models.py             # SQLAlchemy models: User, Post, Follow, Session
+├── sanitize.py           # HTML whitelist sanitiser for rich-text post bodies
 ├── content.py            # Random post-title / post-body pool
+├── SCHEMA.md             # Database ER diagram (Mermaid)
 ├── requirements.txt
 ├── data.db               # SQLite (auto-created, git-ignored)
+├── uploads/              # Uploaded post images (auto-created, git-ignored)
 └── frontend/
     ├── package.json
     ├── vite.config.js
@@ -53,14 +76,18 @@ profile_parser/
         ├── App.jsx       # routes
         ├── api.js        # backend client + global 401 interceptor
         ├── auth.jsx      # AuthProvider, useAuth() hook
+        ├── timeAgo.js    # relative "time ago" formatter
+        ├── htmlText.js   # strip HTML → plain text (empty-body check)
         ├── components/
         │   ├── TopBar.jsx
-        │   ├── SinglePost.jsx   # inline post editor for own posts
-        │   └── Feed.jsx
+        │   ├── SinglePost.jsx        # renders rich-text + image; inline editor
+        │   ├── RichTextEditor.jsx    # dependency-free WYSIWYG editor
+        │   ├── CreatePostDialog.jsx  # compose a post (title + body + image)
+        │   └── Feed.jsx              # Global/Following tabs + infinite scroll
         └── pages/
             ├── Home.jsx
             ├── Users.jsx
-            ├── UserDetail.jsx   # profile + Edit profile + Change password
+            ├── UserDetail.jsx   # profile + follow + Edit profile + Change password
             ├── About.jsx
             ├── Login.jsx
             └── Register.jsx
@@ -109,12 +136,13 @@ cp .env.example .env
 
 | Method | Path | Description |
 | --- | --- | --- |
-| GET | `/api/posts?page=N&per_page=10` | Paginated global feed |
+| GET | `/api/posts?page=N&per_page=10&scope=all\|following` | Paginated feed (`following` needs auth) |
 | GET | `/api/users` | All users with post preview |
-| GET | `/api/user/<id>` | Single user by id |
+| GET | `/api/user/<id>` | Single user by id (incl. follow counts) |
 | GET | `/api/users/<id>/posts?page=N&per_page=10` | Posts for a user |
 | GET | `/api/random-user` | One random user |
-| GET | `/api/search?q=<query>` | Name/email search |
+| GET | `/api/search?q=<query>` | Username / name / email search |
+| GET | `/api/uploads/<filename>` | Serve an uploaded post image |
 
 ### Auth
 
@@ -129,8 +157,11 @@ cp .env.example .env
 
 | Method | Path | Authz |
 | --- | --- | --- |
+| POST | `/api/posts` | `401` unauth · `400` bad input · `201` on success. `multipart/form-data`: `title` (text), `body` (rich HTML, sanitised), optional `image` file. |
 | PATCH | `/api/user/<id>` | `401` unauth · `404` if id ≠ your id · `200` on success. Editable: `name, bio, phone, website, company, avatar_seed`. `email` / `password` not editable here. |
 | PATCH | `/api/posts/<id>` | `401` unauth · `404` if missing or not yours · `200` on success. Editable: `title, body`. |
+| POST | `/api/users/<id>/follow` | `401` unauth · `400` self-follow · `404` no such user · `200` with counts. Idempotent. |
+| DELETE | `/api/users/<id>/follow` | Same as above; unfollows. Idempotent. |
 
 ## Tech stack
 

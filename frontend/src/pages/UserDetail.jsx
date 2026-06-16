@@ -11,7 +11,7 @@
 // All "edit" actions are double-gated: the UI hides them off-profile, and
 // the server returns 404 if a forged request tries to edit a foreign user.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, Link as RouterLink } from "react-router-dom";
 import {
   Container,
@@ -36,12 +36,16 @@ import LanguageIcon from "@mui/icons-material/Language";
 import BusinessIcon from "@mui/icons-material/BusinessOutlined";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import EditIcon from "@mui/icons-material/Edit";
+import PersonAddIcon from "@mui/icons-material/PersonAddAlt1";
+import PersonRemoveIcon from "@mui/icons-material/PersonRemoveAlt1";
 import SinglePost from "../components/SinglePost";
 import {
   fetchUser,
   fetchUserPosts,
   updateUser as apiUpdateUser,
   changePassword as apiChangePassword,
+  followUser as apiFollowUser,
+  unfollowUser as apiUnfollowUser,
 } from "../api";
 import { useAuth } from "../auth.jsx";
 
@@ -55,10 +59,10 @@ export default function UserDetail() {
   const [userError, setUserError] = useState(null);
 
   const [posts, setPosts] = useState([]);
-  const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const [postsLoading, setPostsLoading] = useState(false);
   const [postsError, setPostsError] = useState(null);
+  const [followBusy, setFollowBusy] = useState(false);
 
   const [editingProfile, setEditingProfile] = useState(false);
   const [profileDraft, setProfileDraft] = useState(null);
@@ -160,6 +164,7 @@ export default function UserDetail() {
   }
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setUserLoading(true);
     setUserError(null);
     fetchUser(id)
@@ -168,38 +173,89 @@ export default function UserDetail() {
       .finally(() => setUserLoading(false));
   }, [id]);
 
-  const inFlight = useRef(false);
+  // Follow / unfollow the displayed user. The endpoint returns the fresh
+  // counts + isFollowing, which we merge straight into the user state.
+  async function toggleFollow() {
+    if (!user) return;
+    setFollowBusy(true);
+    try {
+      const res = user.isFollowing
+        ? await apiUnfollowUser(user.id)
+        : await apiFollowUser(user.id);
+      setUser((prev) => ({ ...prev, ...res }));
+    } catch {
+      // Non-fatal — leave the button state unchanged on error.
+    } finally {
+      setFollowBusy(false);
+    }
+  }
 
-  async function loadNextPosts() {
+  // The IntersectionObserver is created once and can't read fresh state, so the
+  // values it needs (current user id, page, hasMore) live in refs.
+  const pageRef = useRef(0);
+  const idRef = useRef(id);
+  const hasMoreRef = useRef(true);
+  const inFlight = useRef(false);
+  const observerRef = useRef(null);
+
+  // Stable loader — takes the target user id so it never closes over a stale one.
+  const fetchPage = useCallback(async (targetId, targetPage, reset) => {
     if (inFlight.current) return;
     inFlight.current = true;
     setPostsLoading(true);
     setPostsError(null);
     try {
-      const nextPage = page + 1;
-      const data = await fetchUserPosts(id, nextPage, PAGE_SIZE);
+      const data = await fetchUserPosts(targetId, targetPage, PAGE_SIZE);
       setPosts((prev) => {
-        const seen = new Set(prev.map((p) => p.id));
+        const base = reset ? [] : prev;
+        const seen = new Set(base.map((p) => p.id));
         const fresh = data.items.filter((p) => !seen.has(p.id));
-        return [...prev, ...fresh];
+        return [...base, ...fresh];
       });
-      setPage(nextPage);
+      pageRef.current = targetPage;
+      hasMoreRef.current = data.has_more;
       setHasMore(data.has_more);
     } catch (err) {
       setPostsError(err.message);
+      hasMoreRef.current = false;
+      setHasMore(false);
     } finally {
       setPostsLoading(false);
       inFlight.current = false;
     }
-  }
+  }, []);
 
+  // Reset and load page 1 whenever we switch to a different user. fetchPage
+  // (called below) re-sets hasMore from the response; we only reset the refs.
   useEffect(() => {
-    setPosts([]);
-    setPage(0);
-    setHasMore(true);
-    loadNextPosts();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+    idRef.current = id;
+    pageRef.current = 0;
+    hasMoreRef.current = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchPage(id, 1, true);
+  }, [id, fetchPage]);
+
+  // Callback ref on the sentinel: wires up infinite scroll when it mounts.
+  const sentinelRef = useCallback(
+    (node) => {
+      if (observerRef.current) {
+        observerRef.current.disconnect();
+        observerRef.current = null;
+      }
+      if (!node) return;
+      const observer = new IntersectionObserver(
+        (entries) => {
+          if (entries[0].isIntersecting && !inFlight.current && hasMoreRef.current) {
+            fetchPage(idRef.current, pageRef.current + 1, false);
+          }
+        },
+        { rootMargin: "300px" }
+      );
+      observer.observe(node);
+      observerRef.current = observer;
+    },
+    [fetchPage]
+  );
 
   if (userLoading) {
     return (
@@ -246,8 +302,10 @@ export default function UserDetail() {
                 {user.bio}
               </Typography>
             )}
-            <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
+            <Stack direction="row" spacing={1} useFlexGap sx={{ mt: 1.5, flexWrap: "wrap" }}>
               <Chip label={`${user.postCount ?? posts.length} posts`} size="small" color="primary" />
+              <Chip label={`${user.followersCount ?? 0} followers`} size="small" variant="outlined" />
+              <Chip label={`${user.followingCount ?? 0} following`} size="small" variant="outlined" />
             </Stack>
           </Box>
           {isOwnProfile && !editingProfile && (
@@ -259,6 +317,18 @@ export default function UserDetail() {
               sx={{ alignSelf: { xs: "flex-start", sm: "flex-start" }, textTransform: "none" }}
             >
               Edit profile
+            </Button>
+          )}
+          {authUser && !isOwnProfile && (
+            <Button
+              variant={user.isFollowing ? "outlined" : "contained"}
+              size="small"
+              startIcon={user.isFollowing ? <PersonRemoveIcon fontSize="small" /> : <PersonAddIcon fontSize="small" />}
+              onClick={toggleFollow}
+              disabled={followBusy}
+              sx={{ alignSelf: "flex-start", textTransform: "none", fontWeight: 600 }}
+            >
+              {user.isFollowing ? "Unfollow" : "Follow"}
             </Button>
           )}
         </Box>
@@ -446,18 +516,18 @@ export default function UserDetail() {
         ))}
       </Grid>
 
-      <Box sx={{ display: "flex", justifyContent: "center", mt: 3, mb: 2 }}>
+      {/* Sentinel watched by the IntersectionObserver to drive infinite scroll. */}
+      <Box
+        ref={sentinelRef}
+        sx={{ display: "flex", justifyContent: "center", mt: 3, mb: 2, minHeight: 48 }}
+      >
         {postsLoading ? (
           <CircularProgress />
-        ) : hasMore ? (
-          <Button variant="contained" size="large" onClick={loadNextPosts}>
-            Load More
-          </Button>
-        ) : posts.length > 0 ? (
+        ) : !hasMore && posts.length > 0 ? (
           <Box sx={{ color: "text.secondary" }}>No more posts.</Box>
-        ) : (
+        ) : !hasMore && posts.length === 0 ? (
           <Box sx={{ color: "text.secondary" }}>This user has no posts yet.</Box>
-        )}
+        ) : null}
       </Box>
     </Container>
   );

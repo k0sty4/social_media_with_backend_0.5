@@ -40,8 +40,9 @@ async function apiJson(path, options = {}) {
 
 // --- Read endpoints (public) ---------------------------------------------
 
-export function fetchPosts(page = 1, perPage = 10) {
-  return apiJson(`/api/posts?page=${page}&per_page=${perPage}`);
+// `scope` is "all" (global feed) or "following" (posts by followed users).
+export function fetchPosts(page = 1, perPage = 10, scope = "all") {
+  return apiJson(`/api/posts?page=${page}&per_page=${perPage}&scope=${scope}`);
 }
 
 export function fetchUsers() {
@@ -98,10 +99,39 @@ export function changePassword({ current_password, new_password }) {
 
 // --- Authenticated mutations ---------------------------------------------
 
+// Create a post. Sent as multipart/form-data so an optional image file can
+// ride along. We deliberately DON'T set Content-Type — the browser adds it
+// (with the right multipart boundary) once it sees a FormData body.
+export async function createPost({ title, body, image }) {
+  const form = new FormData();
+  form.append("title", title);
+  form.append("body", body);
+  if (image) form.append("image", image);
+
+  const response = await api("/api/posts", { method: "POST", body: form });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const err = new Error(data.error || `Request failed: ${response.status}`);
+    err.status = response.status;
+    throw err;
+  }
+  return data;
+}
+
 export function updatePost(id, { title, body }) {
   return jsonBody(`/api/posts/${id}`, "PATCH", { title, body });
 }
 
 export function updateUser(id, fields) {
   return jsonBody(`/api/user/${id}`, "PATCH", fields);
+}
+
+// Follow / unfollow another user. Both return the target's updated
+// { followersCount, followingCount, isFollowing }.
+export function followUser(id) {
+  return jsonBody(`/api/users/${id}/follow`, "POST", {});
+}
+
+export function unfollowUser(id) {
+  return jsonBody(`/api/users/${id}/follow`, "DELETE", {});
 }

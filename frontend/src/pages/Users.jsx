@@ -58,7 +58,7 @@ export default function Users() {
 
       <TextField
         fullWidth
-        placeholder="Search by name or email…"
+        placeholder="Search by username, name or email…"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         size="small"

@@ -17,8 +17,11 @@ import {
 } from "@mui/material";
 import MailOutlineIcon from "@mui/icons-material/MailOutlined";
 import EditIcon from "@mui/icons-material/Edit";
+import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import { useAuth } from "../auth.jsx";
 import { updatePost } from "../api";
+import { timeAgo } from "../timeAgo";
+import RichTextEditor from "./RichTextEditor";
 
 // First letter of each of the first two words, used as a fallback when the
 // author has no DiceBear avatar yet.
@@ -138,6 +141,14 @@ export default function SinglePost({ post, onPostUpdated }) {
                 {post.email}
               </Typography>
             </Box>
+            {post.created_at && (
+              <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, color: "text.secondary" }}>
+                <AccessTimeIcon sx={{ fontSize: 14 }} />
+                <Typography variant="caption" noWrap>
+                  {timeAgo(post.created_at)}
+                </Typography>
+              </Box>
+            )}
           </Box>
         </Box>
 
@@ -150,15 +161,7 @@ export default function SinglePost({ post, onPostUpdated }) {
               size="small"
               fullWidth
             />
-            <TextField
-              label="Body"
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              size="small"
-              fullWidth
-              multiline
-              minRows={3}
-            />
+            <RichTextEditor value={body} onChange={setBody} placeholder="Edit your post…" minHeight={100} />
             {error && <Alert severity="error">{error}</Alert>}
           </Box>
         ) : (
@@ -172,12 +175,17 @@ export default function SinglePost({ post, onPostUpdated }) {
 
             <Divider sx={{ mb: 1.5 }} />
 
-            <Typography
-              variant="body2"
-              color="text.primary"
+            {/* Body is sanitised rich-text HTML from the backend, so it's safe
+                to render directly. Collapsed view is clamped to 3 lines. */}
+            <Box
               sx={{
-                whiteSpace: "pre-line",
+                fontSize: 14,
                 lineHeight: 1.6,
+                color: "text.primary",
+                wordBreak: "break-word",
+                "& a": { color: "primary.main" },
+                "& p": { m: 0, mb: 1 },
+                "& ul, & ol": { mt: 0, mb: 1, pl: 3 },
                 ...(expanded
                   ? {}
                   : {
@@ -187,9 +195,25 @@ export default function SinglePost({ post, onPostUpdated }) {
                       overflow: "hidden",
                     }),
               }}
-            >
-              {post.body}
-            </Typography>
+              dangerouslySetInnerHTML={{ __html: post.body }}
+            />
+
+            {post.image && (
+              <Box
+                component="img"
+                src={post.image}
+                alt={post.title}
+                loading="lazy"
+                sx={{
+                  mt: 1.5,
+                  width: "100%",
+                  maxHeight: expanded ? "none" : 220,
+                  objectFit: "cover",
+                  borderRadius: 2,
+                  display: "block",
+                }}
+              />
+            )}
             {error && !editing && (
               <Alert severity="error" sx={{ mt: 1.5 }}>
                 {error}

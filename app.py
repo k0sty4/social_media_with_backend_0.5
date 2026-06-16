@@ -9,16 +9,19 @@ import os
 import random
 import secrets
 import time
+import uuid
 from collections import deque
 from datetime import datetime, timedelta
 from threading import Lock
 
-from flask import Flask, jsonify, request, make_response
+from flask import Flask, jsonify, request, make_response, send_from_directory
 from flask_cors import CORS
 import requests
 from sqlalchemy import func
+from werkzeug.utils import secure_filename
 
-from models import db, User, Post, Session
+from models import db, User, Post, Follow, Session
+from sanitize import sanitize_html, strip_tags
 from content import random_title, random_body
 
 
@@ -114,6 +117,14 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "data.db")
 app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db.init_app(app)
+
+# Uploaded post images live here. Kept out of the DB (we store only the
+# filename) and served back via GET /api/uploads/<name>.
+UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+ALLOWED_IMAGE_EXT = {"png", "jpg", "jpeg", "gif", "webp"}
+# Reject anything bigger than 5 MB before it ever reaches a handler.
+app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024
 
 
 SESSION_COOKIE = "session_id"
@@ -257,7 +268,14 @@ def seed_db_with_new_users(count=10):
             bio=random.choice(RANDOM_BIOS),
         )
         for _ in range(random.randint(3, 6)):
-            user.posts.append(Post(item=random_title(), body=random_body()))
+            # Stagger creation times over the last ~30 days so the feed's
+            # "time ago" labels look natural rather than all "just now".
+            age = timedelta(minutes=random.randint(5, 60 * 24 * 30))
+            user.posts.append(Post(
+                item=random_title(),
+                body=random_body(),
+                created_at=datetime.utcnow() - age,
+            ))
         db.session.add(user)
         added += 1
 
@@ -269,6 +287,28 @@ def seed_db_with_new_users(count=10):
 # JSON API
 # ---------------------------------------------------------------------------
 
+def _image_url(filename):
+    """Absolute URL for an uploaded image filename, or ``None`` if unset."""
+    if not filename:
+        return None
+    return f"{request.host_url}api/uploads/{filename}"
+
+
+def _post_payload(post, author):
+    """The single post shape every read endpoint returns to the frontend."""
+    return {
+        "id": post.id,
+        "title": post.item,
+        "body": post.body,
+        "image": _image_url(post.image),
+        "created_at": post.created_iso(),
+        "user_id": post.user_id,
+        "user_name": author.name if author else None,
+        "email": author.email if author else None,
+        "avatar": author.avatar_url() if author else None,
+    }
+
+
 @app.route("/", methods=["GET"])
 def api_root():
     """Landing endpoint: returns the catalog of available routes."""
@@ -276,12 +316,13 @@ def api_root():
         "name": "Profile Explorer API",
         "endpoints": {
             "public": [
-                "GET  /api/posts?page=N&per_page=10",
+                "GET  /api/posts?page=N&per_page=10&scope=all|following",
                 "GET  /api/users",
                 "GET  /api/user/<id>",
                 "GET  /api/users/<id>/posts?page=N&per_page=10",
                 "GET  /api/random-user",
                 "GET  /api/search?q=<query>",
+                "GET  /api/uploads/<filename>",
             ],
             "auth": [
                 "POST /api/auth/register",
@@ -290,8 +331,11 @@ def api_root():
                 "POST /api/auth/change-password",
             ],
             "authed": [
-                "PATCH /api/user/<id>   (only your own)",
-                "PATCH /api/posts/<id>  (only your own)",
+                "POST   /api/posts            (create — multipart, text + image)",
+                "PATCH  /api/user/<id>        (only your own)",
+                "PATCH  /api/posts/<id>       (only your own)",
+                "POST   /api/users/<id>/follow",
+                "DELETE /api/users/<id>/follow",
             ],
         },
     })
@@ -299,7 +343,12 @@ def api_root():
 
 @app.route("/api/posts", methods=["GET"])
 def api_posts():
-    """Paginated feed of posts with author email — consumed by React Feed."""
+    """Paginated feed of posts. ``scope`` selects which posts:
+
+      * ``all`` (default) — the global feed, every user's posts
+      * ``following``     — only posts by users the caller follows
+        (requires a session; 401 otherwise)
+    """
     try:
         page = max(1, int(request.args.get("page", 1)))
     except ValueError:
@@ -309,23 +358,24 @@ def api_posts():
     except ValueError:
         per_page = PAGE_SIZE
 
-    pagination = db.paginate(
-        db.select(Post).order_by(Post.id.desc()),
-        page=page, per_page=per_page, error_out=False,
-    )
+    scope = request.args.get("scope", "all")
+    stmt = db.select(Post).order_by(Post.id.desc())
 
-    items = []
-    for p in pagination.items:
-        author = p.author
-        items.append({
-            "id": p.id,
-            "title": p.item,
-            "body": p.body,
-            "user_id": p.user_id,
-            "user_name": author.name if author else None,
-            "email": author.email if author else None,
-            "avatar": author.avatar_url() if author else None,
-        })
+    if scope == "following":
+        viewer = current_user()
+        if viewer is None:
+            return jsonify({"error": "authentication required"}), 401
+        followee_ids = db.select(Follow.followee_id).where(
+            Follow.follower_id == viewer.id
+        )
+        stmt = (
+            db.select(Post)
+            .where(Post.user_id.in_(followee_ids))
+            .order_by(Post.id.desc())
+        )
+
+    pagination = db.paginate(stmt, page=page, per_page=per_page, error_out=False)
+    items = [_post_payload(p, p.author) for p in pagination.items]
 
     return jsonify({
         "items": items,
@@ -361,15 +411,7 @@ def api_user_posts(user_id):
         page=page, per_page=per_page, error_out=False,
     )
 
-    items = [{
-        "id": p.id,
-        "title": p.item,
-        "body": p.body,
-        "user_id": p.user_id,
-        "user_name": user.name,
-        "email": user.email,
-        "avatar": user.avatar_url(),
-    } for p in pagination.items]
+    items = [_post_payload(p, user) for p in pagination.items]
 
     return jsonify({
         "items": items,
@@ -383,8 +425,12 @@ def api_user_posts(user_id):
 @app.route("/api/users", methods=["GET"])
 def api_users():
     """Return every user in the local DB with profile + post preview."""
+    viewer = current_user()
+    viewer_id = viewer.id if viewer else None
     users = db.session.scalars(db.select(User).order_by(User.id)).all()
-    return jsonify([u.to_public_dict(include_posts=True) for u in users])
+    return jsonify([
+        u.to_public_dict(include_posts=True, viewer_id=viewer_id) for u in users
+    ])
 
 
 @app.route("/api/random-user", methods=["GET"])
@@ -393,7 +439,10 @@ def random_user_endpoint():
     user = db.session.scalar(db.select(User).order_by(func.random()).limit(1))
     if user is None:
         return jsonify({"error": "No users in the database yet"}), 404
-    return jsonify(user.to_public_dict(include_posts=True))
+    viewer = current_user()
+    return jsonify(user.to_public_dict(
+        include_posts=True, viewer_id=viewer.id if viewer else None,
+    ))
 
 
 @app.route("/api/user/<int:user_id>", methods=["GET"])
@@ -402,7 +451,10 @@ def get_user(user_id):
     user = db.session.get(User, user_id)
     if user is None:
         return jsonify({"error": "User not found"}), 404
-    return jsonify(user.to_public_dict(include_posts=True))
+    viewer = current_user()
+    return jsonify(user.to_public_dict(
+        include_posts=True, viewer_id=viewer.id if viewer else None,
+    ))
 
 
 @app.route("/api/search", methods=["GET"])
@@ -416,6 +468,7 @@ def search_users():
     stmt = db.select(User).where(
         db.or_(
             db.func.lower(User.name).like(pattern),
+            db.func.lower(User.username).like(pattern),
             db.func.lower(User.email).like(pattern),
         )
     ).order_by(User.id)
@@ -425,6 +478,13 @@ def search_users():
         {"id": u.id, "name": u.name, "email": u.email, "avatar": u.avatar_url()}
         for u in users
     ])
+
+
+@app.route("/api/uploads/<path:filename>", methods=["GET"])
+def serve_upload(filename):
+    """Serve an uploaded post image. ``send_from_directory`` confines the
+    lookup to ``UPLOAD_DIR``, so a crafted ``filename`` can't escape it."""
+    return send_from_directory(UPLOAD_DIR, filename)
 
 
 # ---------------------------------------------------------------------------
@@ -634,11 +694,67 @@ def update_user(user_id):
 # Post mutations
 # ---------------------------------------------------------------------------
 
+def _save_image(file_storage):
+    """Validate and persist an uploaded image. Returns ``(filename, error)``.
+
+    Only a small set of image extensions is accepted; the stored name is a
+    random uuid so a user-supplied filename can never collide or traverse
+    paths. ``(None, None)`` means "no file was sent" (images are optional).
+    """
+    if file_storage is None or not file_storage.filename:
+        return None, None
+    original = secure_filename(file_storage.filename)
+    ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
+    if ext not in ALLOWED_IMAGE_EXT:
+        return None, "unsupported image type"
+    filename = f"{uuid.uuid4().hex}.{ext}"
+    file_storage.save(os.path.join(UPLOAD_DIR, filename))
+    return filename, None
+
+
+@app.route("/api/posts", methods=["POST"])
+def create_post():
+    """Create a new post for the signed-in user.
+
+    Accepts ``multipart/form-data`` (so an image can ride along):
+      * ``title`` — plain text, required
+      * ``body``  — rich-text HTML, required (sanitised server-side)
+      * ``image`` — optional image file (png/jpg/gif/webp, <= 5 MB)
+
+    Responses:
+      * 201 — created; the full post payload is returned
+      * 400 — missing/empty title or body, or a bad image
+      * 401 — not signed in
+    """
+    user = current_user()
+    if user is None:
+        return jsonify({"error": "authentication required"}), 401
+
+    title = (request.form.get("title") or "").strip()
+    body = sanitize_html(request.form.get("body") or "")
+
+    if not title:
+        return jsonify({"error": "title is required"}), 400
+    # A body of only markup (e.g. "<p></p>") has no real content.
+    if not strip_tags(body):
+        return jsonify({"error": "body is required"}), 400
+
+    filename, err = _save_image(request.files.get("image"))
+    if err:
+        return jsonify({"error": err}), 400
+
+    post = Post(user_id=user.id, item=title, body=body, image=filename)
+    db.session.add(post)
+    db.session.commit()
+    return jsonify(_post_payload(post, user)), 201
+
+
 @app.route("/api/posts/<int:post_id>", methods=["PATCH"])
 def update_post(post_id):
     """Update one of the caller's own posts.
 
-    Editable: title, body (either or both). Responses:
+    Editable: title, body (either or both). The body is re-sanitised on every
+    write. Responses:
       * 200 — updated; the new post payload is returned
       * 400 — empty title/body or nothing to update
       * 401 — not signed in
@@ -663,19 +779,56 @@ def update_post(post_id):
             return jsonify({"error": "title cannot be empty"}), 400
         post.item = title
     if body is not None:
-        body = body.strip()
-        if not body:
+        body = sanitize_html(body)
+        if not strip_tags(body):
             return jsonify({"error": "body cannot be empty"}), 400
         post.body = body
     if title is None and body is None:
         return jsonify({"error": "nothing to update"}), 400
 
     db.session.commit()
+    return jsonify(_post_payload(post, user))
+
+
+# ---------------------------------------------------------------------------
+# Follow / unfollow
+# ---------------------------------------------------------------------------
+
+@app.route("/api/users/<int:user_id>/follow", methods=["POST", "DELETE"])
+def follow_user(user_id):
+    """Follow (POST) or unfollow (DELETE) another user.
+
+    Both verbs are idempotent — following twice or unfollowing someone you
+    don't follow is a no-op that still returns the current counts. Responses:
+      * 200 — ``{followersCount, followingCount, isFollowing}`` for the target
+      * 400 — trying to follow yourself
+      * 401 — not signed in
+      * 404 — target user does not exist
+    """
+    viewer = current_user()
+    if viewer is None:
+        return jsonify({"error": "authentication required"}), 401
+
+    target = db.session.get(User, user_id)
+    if target is None:
+        return jsonify({"error": "user not found"}), 404
+    if target.id == viewer.id:
+        return jsonify({"error": "you cannot follow yourself"}), 400
+
+    edge = db.session.get(Follow, (viewer.id, target.id))
+    if request.method == "POST":
+        if edge is None:
+            db.session.add(Follow(follower_id=viewer.id, followee_id=target.id))
+            db.session.commit()
+    else:  # DELETE
+        if edge is not None:
+            db.session.delete(edge)
+            db.session.commit()
+
     return jsonify({
-        "id": post.id,
-        "user_id": post.user_id,
-        "title": post.item,
-        "body": post.body,
+        "followersCount": target.follower_count(),
+        "followingCount": target.following_count(),
+        "isFollowing": Follow.exists(viewer.id, target.id),
     })
 
 
@@ -704,6 +857,27 @@ def ensure_auth_columns():
                 conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR"))
             if "avatar_seed" not in columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN avatar_seed VARCHAR"))
+
+    # posts gained an optional image and a created_at timestamp.
+    if "posts" in inspector.get_table_names():
+        post_cols = {c["name"] for c in inspector.get_columns("posts")}
+        with db.engine.begin() as conn:
+            if "image" not in post_cols:
+                conn.execute(text("ALTER TABLE posts ADD COLUMN image VARCHAR"))
+            if "created_at" not in post_cols:
+                # SQLite can't ADD a non-constant default, so add it nullable
+                # then backfill legacy rows with a stable, slightly-staggered
+                # time (older ids look older) before the model treats it as
+                # NOT NULL going forward.
+                conn.execute(text("ALTER TABLE posts ADD COLUMN created_at DATETIME"))
+                base = datetime.utcnow() - timedelta(days=7)
+                rows = conn.execute(text("SELECT id FROM posts ORDER BY id")).fetchall()
+                for offset, (pid,) in enumerate(rows):
+                    ts = base + timedelta(minutes=offset)
+                    conn.execute(
+                        text("UPDATE posts SET created_at = :ts WHERE id = :id"),
+                        {"ts": ts, "id": pid},
+                    )
 
     if "sessions" in inspector.get_table_names():
         with db.engine.begin() as conn:
