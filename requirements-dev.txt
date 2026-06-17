@@ -1,0 +1,11 @@
+# Test-only dependencies (not needed to run the app).
+#
+#   pip install -r requirements-dev.txt
+#   playwright install chromium    # one-time, for the E2E tests
+#
+# Run the tests:
+#   pytest            # unit + API + flow tests
+#   pytest -m e2e     # browser end-to-end tests (starts its own servers)
+
+pytest==8.3.3
+playwright==1.59.0

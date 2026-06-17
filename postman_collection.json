@@ -1,0 +1,182 @@
+{
+  "info": {
+    "name": "Profile Explorer API",
+    "description": "Manual-testing collection for the Flask backend.\n\nHOW TO USE:\n1. Start the backend:  python app.py   (runs on http://localhost:5001)\n2. Import this file into Postman (Import > File).\n3. Run requests top-to-bottom. 'Register' or 'Login' sets a session cookie that\n   Postman stores automatically and sends on later requests.\n\nIMPORTANT:\n* All mutating requests (POST/PATCH/DELETE) carry an 'Origin' header equal to\n  the frontend origin. Without it the CSRF guard replies 403. (login/register\n  are exempt but keep it anyway.)\n* Cookies are handled by Postman's cookie jar — no manual token needed.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:5001" },
+    { "key": "frontendOrigin", "value": "http://localhost:5173" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Origin", "value": "{{frontendOrigin}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Test User\",\n  \"email\": \"test@example.com\",\n  \"password\": \"password123\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/auth/register", "host": ["{{baseUrl}}"], "path": ["api", "auth", "register"] },
+            "description": "Create an account and get signed in (201 + Set-Cookie). 400 = bad input, 409 = email taken."
+          }
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Origin", "value": "{{frontendOrigin}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"test@example.com\",\n  \"password\": \"password123\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/auth/login", "host": ["{{baseUrl}}"], "path": ["api", "auth", "login"] },
+            "description": "Verify credentials, start a session. 200 ok, 401 wrong creds, 429 rate limited."
+          }
+        },
+        {
+          "name": "Change password",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Origin", "value": "{{frontendOrigin}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"current_password\": \"password123\",\n  \"new_password\": \"newpassword123\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/api/auth/change-password", "host": ["{{baseUrl}}"], "path": ["api", "auth", "change-password"] },
+            "description": "Requires an active session. Kills all OTHER sessions on success."
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Origin", "value": "{{frontendOrigin}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/auth/logout", "host": ["{{baseUrl}}"], "path": ["api", "auth", "logout"] },
+            "description": "Ends the current session and clears the cookie. Always 200 (idempotent)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Public reads",
+      "item": [
+        {
+          "name": "API root (route catalog)",
+          "request": { "method": "GET", "header": [], "url": { "raw": "{{baseUrl}}/", "host": ["{{baseUrl}}"], "path": [""] } }
+        },
+        {
+          "name": "Global feed",
+          "request": { "method": "GET", "header": [], "url": { "raw": "{{baseUrl}}/api/posts?scope=all&page=1&per_page=10", "host": ["{{baseUrl}}"], "path": ["api", "posts"], "query": [ {"key":"scope","value":"all"}, {"key":"page","value":"1"}, {"key":"per_page","value":"10"} ] }, "description": "Paginated. Response: { items, page, per_page, total, has_more }." }
+        },
+        {
+          "name": "Following feed (needs login)",
+          "request": { "method": "GET", "header": [], "url": { "raw": "{{baseUrl}}/api/posts?scope=following", "host": ["{{baseUrl}}"], "path": ["api", "posts"], "query": [ {"key":"scope","value":"following"} ] }, "description": "401 if not logged in. Otherwise only posts by users you follow." }
+        },
+        {
+          "name": "All users",
+          "request": { "method": "GET", "header": [], "url": { "raw": "{{baseUrl}}/api/users", "host": ["{{baseUrl}}"], "path": ["api", "users"] } }
+        },
+        {
+          "name": "One user by id",
+          "request": { "method": "GET", "header": [], "url": { "raw": "{{baseUrl}}/api/user/1", "host": ["{{baseUrl}}"], "path": ["api", "user", "1"] }, "description": "Profile + post preview + follow counts. 404 if missing." }
+        },
+        {
+          "name": "User's posts (paginated)",
+          "request": { "method": "GET", "header": [], "url": { "raw": "{{baseUrl}}/api/users/1/posts?page=1&per_page=10", "host": ["{{baseUrl}}"], "path": ["api", "users", "1", "posts"], "query": [ {"key":"page","value":"1"}, {"key":"per_page","value":"10"} ] } }
+        },
+        {
+          "name": "Random user",
+          "request": { "method": "GET", "header": [], "url": { "raw": "{{baseUrl}}/api/random-user", "host": ["{{baseUrl}}"], "path": ["api", "random-user"] } }
+        },
+        {
+          "name": "Search users",
+          "request": { "method": "GET", "header": [], "url": { "raw": "{{baseUrl}}/api/search?q=test", "host": ["{{baseUrl}}"], "path": ["api", "search"], "query": [ {"key":"q","value":"test"} ] }, "description": "Case-insensitive substring on name/username/email." }
+        }
+      ]
+    },
+    {
+      "name": "Posts (authed)",
+      "item": [
+        {
+          "name": "Create post (text + optional image)",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Origin", "value": "{{frontendOrigin}}" } ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "title", "value": "My post from Postman", "type": "text" },
+                { "key": "body", "value": "<p>Hello <b>world</b></p>", "type": "text" },
+                { "key": "image", "type": "file", "src": [], "description": "optional png/jpg/gif/webp, <=5MB" }
+              ]
+            },
+            "url": { "raw": "{{baseUrl}}/api/posts", "host": ["{{baseUrl}}"], "path": ["api", "posts"] },
+            "description": "multipart/form-data. 201 created, 400 bad input, 401 not logged in. Body is HTML-sanitised server-side."
+          }
+        },
+        {
+          "name": "Edit own post",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Origin", "value": "{{frontendOrigin}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"title\": \"Edited title\",\n  \"body\": \"<p>updated</p>\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/posts/1", "host": ["{{baseUrl}}"], "path": ["api", "posts", "1"] },
+            "description": "200 ok. 404 if the post doesn't exist OR isn't yours (existence hidden). 401 if not logged in."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Profile & Social (authed)",
+      "item": [
+        {
+          "name": "Edit own profile",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Origin", "value": "{{frontendOrigin}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"New Name\",\n  \"bio\": \"My new bio\",\n  \"website\": \"https://example.com\"\n}" },
+            "url": { "raw": "{{baseUrl}}/api/user/1", "host": ["{{baseUrl}}"], "path": ["api", "user", "1"] },
+            "description": "Use YOUR own id. 404 if you target someone else. email/password are NOT editable here."
+          }
+        },
+        {
+          "name": "Follow user",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Origin", "value": "{{frontendOrigin}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/users/2/follow", "host": ["{{baseUrl}}"], "path": ["api", "users", "2", "follow"] },
+            "description": "Returns { followersCount, followingCount, isFollowing }. 400 if you follow yourself."
+          }
+        },
+        {
+          "name": "Unfollow user",
+          "request": {
+            "method": "DELETE",
+            "header": [ { "key": "Origin", "value": "{{frontendOrigin}}" } ],
+            "url": { "raw": "{{baseUrl}}/api/users/2/follow", "host": ["{{baseUrl}}"], "path": ["api", "users", "2", "follow"] }
+          }
+        }
+      ]
+    }
+  ]
+}

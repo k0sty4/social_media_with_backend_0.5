@@ -114,7 +114,11 @@ FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "http://localhost:5173")
 CORS(app, supports_credentials=True, origins=[FRONTEND_ORIGIN])
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "data.db")
-app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH}"
+# DATABASE_URI lets the test suite point at a throwaway database instead of the
+# real data.db; falls back to the local file for normal runs.
+app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
+    "DATABASE_URI", f"sqlite:///{DB_PATH}"
+)
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db.init_app(app)
 
