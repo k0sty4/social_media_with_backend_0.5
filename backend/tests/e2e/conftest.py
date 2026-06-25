@@ -25,8 +25,10 @@ BACKEND_PORT = 5055
 FRONTEND_PORT = 5180
 BASE_URL = f"http://localhost:{FRONTEND_PORT}"
 
+# backend/tests/e2e/ -> up two levels is the backend package dir, up three is repo root.
 _THIS_DIR = os.path.dirname(__file__)
-PROJECT_ROOT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
+BACKEND_DIR = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
+PROJECT_ROOT = os.path.abspath(os.path.join(BACKEND_DIR, ".."))
 FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
 
 
@@ -70,7 +72,7 @@ def live_servers():
     )
     backend = subprocess.Popen(
         [sys.executable, "-c", backend_code],
-        cwd=PROJECT_ROOT, env=backend_env,
+        cwd=BACKEND_DIR, env=backend_env,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 

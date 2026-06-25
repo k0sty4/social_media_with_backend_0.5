@@ -59,14 +59,24 @@ frontend (React + MUI, Vite)  ──HTTP+cookie──▶  backend (Flask)  ─�
 
 ```
 profile_parser/
-├── app.py                # Flask JSON API (auth, posts, users, follows, profile)
-├── models.py             # SQLAlchemy models: User, Post, Follow, Session
-├── sanitize.py           # HTML whitelist sanitiser for rich-text post bodies
-├── content.py            # Random post-title / post-body pool
-├── SCHEMA.md             # Database ER diagram (Mermaid)
-├── requirements.txt
-├── data.db               # SQLite (auto-created, git-ignored)
-├── uploads/              # Uploaded post images (auto-created, git-ignored)
+├── Makefile              # shortcuts: make backend / frontend / test / e2e
+├── backend/              # self-contained Flask backend
+│   ├── app.py            # Flask JSON API entry point (wires blueprints together)
+│   ├── auth.py           # auth blueprint: register / login / logout / change-pw
+│   ├── posts.py          # posts blueprint: feed, create/edit, image serving
+│   ├── users.py          # users blueprint: profiles, search, follow/unfollow
+│   ├── models.py         # SQLAlchemy models: User, Post, Follow, Session
+│   ├── sanitize.py       # HTML whitelist sanitiser for rich-text post bodies
+│   ├── content.py        # Random post-title / post-body pool
+│   ├── config.py         # Shared config constants
+│   ├── seed.py           # Startup seeding + one-time SQLite migrations
+│   ├── SCHEMA.md         # Database ER diagram (Mermaid)
+│   ├── requirements.txt
+│   ├── requirements-dev.txt
+│   ├── pytest.ini
+│   ├── data.db           # SQLite (auto-created, git-ignored)
+│   ├── uploads/          # Uploaded post images (auto-created, git-ignored)
+│   └── tests/            # unit / API / flow tests (+ tests/e2e browser tests)
 └── frontend/
     ├── package.json
     ├── vite.config.js
@@ -100,7 +110,7 @@ Two terminals — one for the backend, one for the frontend.
 ### 1. Backend (Flask)
 
 ```bash
-cd profile_parser
+cd profile_parser/backend
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
@@ -129,6 +139,20 @@ cd profile_parser/frontend
 cp .env.example .env
 # edit .env, default: VITE_API_BASE=http://localhost:5001
 ```
+
+## Tests
+
+All backend tests live in `backend/tests/` and run from the backend dir:
+
+```bash
+cd profile_parser/backend
+pip install -r requirements-dev.txt
+pytest                            # unit + API + flow tests (88 tests)
+pytest -m e2e                     # browser end-to-end tests (starts its own servers)
+```
+
+The E2E tests need Node and a one-time `playwright install chromium`. From the
+repo root the `Makefile` wraps these: `make test`, `make e2e`.
 
 ## API endpoints
 

@@ -27,22 +27,22 @@ erDiagram
 
     POSTS {
         int      id PK
-        int      user_id FK "→ users.id"
+        int      user_id FK "references users.id"
         string   item "title"
         text     body "sanitised rich-text HTML"
         string   image "uploaded file name, nullable"
-        datetime created_at "drives 'time ago'"
+        datetime created_at "drives the time-ago label"
     }
 
     FOLLOWS {
-        int      follower_id PK,FK "→ users.id"
-        int      followee_id PK,FK "→ users.id"
+        int      follower_id PK "FK references users.id"
+        int      followee_id PK "FK references users.id"
         datetime created_at
     }
 
     SESSIONS {
         string   token PK "sha256 of cookie token"
-        int      user_id FK "→ users.id"
+        int      user_id FK "references users.id"
         datetime created_at
         datetime expires_at
     }
