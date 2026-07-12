@@ -4,7 +4,7 @@ These are the "true" unit tests: pure functions in, expected value out. They're
 fast and pinpoint exactly which helper broke.
 """
 
-from sanitize import sanitize_html, strip_tags, _safe_href
+from sanitize import sanitize_html, strip_tags, _safe_href, MAX_LEN
 from app import _hash_token
 from models import User
 
@@ -41,6 +41,47 @@ def test_sanitize_empty_input():
     """Empty input returns an empty string, not an error."""
     assert sanitize_html("") == ""
     assert sanitize_html(None) == ""
+
+
+def test_sanitize_strips_attributes_from_allowed_tags():
+    """Even a whitelisted tag keeps NO attributes (onclick, style, class...)."""
+    clean = sanitize_html('<p onclick="steal()" class="x">hi</p>')
+    assert "onclick" not in clean
+    assert "class" not in clean
+    assert "<p>hi</p>" in clean
+
+
+def test_sanitize_keeps_self_closing_br():
+    """A self-closing ``<br/>`` survives as a ``<br>`` void element."""
+    clean = sanitize_html("line<br/>break")
+    assert "<br>" in clean
+    assert "line" in clean and "break" in clean
+
+
+def test_sanitize_preserves_nested_lists():
+    """Nested block structure (ul > li) is kept intact."""
+    clean = sanitize_html("<ul><li>one</li><li>two</li></ul>")
+    assert clean.count("<li>") == 2
+    assert "<ul>" in clean and "</ul>" in clean
+
+
+def test_sanitize_drops_unknown_tag_but_keeps_text():
+    """A non-whitelisted tag is removed but its text content is preserved."""
+    clean = sanitize_html("<marquee>scroll</marquee>")
+    assert "<marquee" not in clean
+    assert "scroll" in clean
+
+
+def test_sanitize_escapes_stray_angle_brackets():
+    """Loose ``<`` / ``>`` in text are escaped so they can't form markup."""
+    clean = sanitize_html("2 < 3 and 5 > 4")
+    assert "&lt;" in clean and "&gt;" in clean
+
+
+def test_sanitize_enforces_max_length():
+    """Input beyond MAX_LEN is truncated before parsing (DoS / storage guard)."""
+    huge = "a" * (MAX_LEN + 5000)
+    assert len(sanitize_html(huge)) <= MAX_LEN
 
 
 # --- strip_tags: plain-text projection used to detect "empty" posts -------
